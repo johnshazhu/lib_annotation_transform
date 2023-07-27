@@ -1,0 +1,3 @@
+rootProject.name = 'lib_annotation_transform'
+
+include 'lib_annotation_transform'
