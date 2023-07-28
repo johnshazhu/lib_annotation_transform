@@ -1,7 +1,7 @@
 plugins {
     id 'groovy'
-    id 'com.gradle.plugin-publish' version '1.1.0'
     id 'signing'
+    id 'maven-publish'
 }
 
 repositories {
@@ -22,19 +22,4 @@ dependencies {
     implementation "org.javassist:javassist:3.26.0-GA"
 }
 
-group = "io.github.johnshazhu"
-version = "1.0.0"
-
-gradlePlugin {
-    website = "https://github.com/johnshazhu/lib_annotation_transform"
-    vcsUrl = "https://github.com/johnshazhu/lib_annotation_transform.git"
-    plugins {
-        annotationProcessPlugin {
-            id = 'io.github.johnshazhu.lib_annotation_transform'
-            implementationClass = 'com.lib.annotation.gradle.plugin.AnnotationPlugin'
-            displayName = 'lib_annotation_transform'
-            description = 'A plugin for inject annotation transfrom process'
-            tags.set(['lib_annotation', 'transform'])
-        }
-    }
-}
+apply from: 'maven.gradle'
