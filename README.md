@@ -24,3 +24,12 @@ fun onResume() {
     Log.i("xdebug", "onResume")
 }
 ```
+Support custom config, we can add config info in transform_config.properties.
+```
+log_enable=true
+skip_package=org.greenrobot,com.networkbench
+skip_filename_prefix=R.,R$,kotlin,android
+skip_filename_contain=BuildConfig,intellij,jetbrains,io.github.johnshazhu
+skip_jar_path_contain=.gradle/caches
+keep_jar_path_contain=lib_annotation
+```
