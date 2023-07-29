@@ -1,6 +1,12 @@
 # lib_annotation_transform
 This plugin is for code stub in transform phase. It
 needs to be used together with [lib_annotation](https://github.com/johnshazhu/lib_annotation).
+usage
+```
+plugins {
+  id("io.github.johnshazhu.lib_annotation_transform") version "1.0.3"
+}
+```
 
 In our project, we may need inject some code to record log information. 
 For example, we want record when activity was resumed. We can add log in

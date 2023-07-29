@@ -1,3 +1,6 @@
 rootProject.name = 'lib_annotation_transform'
 
-include 'lib_annotation_transform'
+//include 'lib_annotation_transform'
+include ':example'
+include ':module_api'
+include ':module_test'
