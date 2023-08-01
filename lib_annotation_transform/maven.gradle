@@ -1,0 +1,69 @@
+sourceSets {
+    main {
+        java.srcDirs = ['src/main/java']
+    }
+}
+
+java {
+    withJavadocJar()
+    withSourcesJar()
+}
+
+// conflict with plugin 'com.gradle.plugin-publish', so comment
+// apply from: 'maven.gradle' in build.gradle when publish to gradle portal.
+gradlePlugin {
+    automatedPublishing = false
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            artifactId = "lib_annotation_transform"
+            from components.java
+            pom {
+                name = 'lib_annotation_transform'
+                description = 'A plugin for @Inject annotation process'
+                url = 'https://github.com/johnshazhu/lib_annotation_transform'
+
+                licenses {
+                    license {
+                        name = 'The Apache License, Version 2.0'
+                        url = 'http://www.apache.org/licenses/LICENSE-2.0.txt'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'johnshazhu'
+                        name = 'jf.xie'
+                        email = 'breezewarm@163.com'
+                    }
+                }
+                scm {
+                    connection = 'scm:git:https://github.com/johnshazhu/lib_annotation_transform.git'
+                    developerConnection = 'scm:git:git@github.com:johnshazhu/lib_annotation_transform.git'
+                    url = 'https://github.com/johnshazhu/lib_annotation_transform'
+                }
+            }
+        }
+    }
+    repositories {
+        maven {
+            name = "localRepo"
+            url = uri("./repo")
+        }
+
+        maven {
+            name = "ossrh"
+            allowInsecureProtocol true
+            url = "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/"
+            credentials {
+                username = ossrhUsername
+                password = ossrhPassword
+            }
+        }
+    }
+}
+
+signing {
+    sign publishing.publications.mavenJava
+}

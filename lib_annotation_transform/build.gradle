@@ -1,20 +1,14 @@
 plugins {
     id 'java-gradle-plugin'
     id 'signing'
-    id("org.jetbrains.kotlin.jvm") version "1.8.20"
+    id 'org.jetbrains.kotlin.jvm'
     id 'maven-publish'
-    id("com.gradle.plugin-publish") version "1.1.0"
+    // comment plugin-publish when publish to maven central or local repo, and
+    // uncomment apply from: 'maven.gradle'.
+    id 'com.gradle.plugin-publish'
 }
 
-task deleteMyFile(type: Delete) {
-    File file = file("repo")
-    if (file.exists() && file.isDirectory()) {
-        file.deleteDir()
-        println("delete old repo before publish")
-    }
-}
-
-task generateResources {
+tasks.register("generateResources") {
     ext {
         propFile = file("$buildDir/generated/version.properties")
     }
@@ -22,6 +16,17 @@ task generateResources {
     doLast {
         mkdir propFile.parentFile
         propFile.text = "version=${project.version}"
+    }
+}
+
+clean {
+    doLast {
+        println("execute delete local repo task")
+        File file = file("repo")
+        if (file.exists() && file.isDirectory()) {
+            file.deleteDir()
+            println("finish delete of local repo")
+        }
     }
 }
 
@@ -34,16 +39,23 @@ repositories {
     google()
 }
 
+sourceCompatibility = "1.8"
+targetCompatibility = "1.8"
+
 dependencies {
-    implementation "io.github.johnshazhu:lib_annotation:1.0.0"
+    implementation("io.github.johnshazhu:lib_annotation:1.0.1")
 
-    implementation "com.android.tools.build:gradle:3.5.3"
+    implementation("com.android.tools.build:gradle:7.0.4")
 
-    implementation "org.javassist:javassist:3.26.0-GA"
+    implementation("org.apache.commons:commons-io:1.3.2")
+
+    implementation("commons-codec:commons-codec:1.16.0")
+
+    implementation('org.javassist:javassist:3.29.2-GA')
 }
 
 group = "io.github.johnshazhu"
-version = "1.0.3"
+version = "1.0.4"
 gradlePlugin {
     website = "https://github.com/johnshazhu/lib_annotation_transform"
     vcsUrl = "https://github.com/johnshazhu/lib_annotation_transform.git"
@@ -57,5 +69,4 @@ gradlePlugin {
         }
     }
 }
-
 //apply from: 'maven.gradle'
