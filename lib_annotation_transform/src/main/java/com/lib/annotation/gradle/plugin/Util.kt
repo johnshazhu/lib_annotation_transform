@@ -21,6 +21,7 @@ const val LOG_TAG = "[AnnotationPlugin]"
 const val VERSION_PROPERTIES = "version.properties"
 const val VERSION = "version"
 const val KOTLIN_COMPANION_SUFFIX = "\$Companion"
+const val LAMBDA = "\$lambda"
 
 val propertiesMap = hashMapOf<String, List<String>>()
 var logEnable = false
@@ -50,11 +51,16 @@ fun isFilterPackage(name: String): Boolean {
 }
 
 fun isIgnoreFileName(name: String): Boolean {
+    val last = if (name.contains(File.separator)) {
+        val index = name.lastIndexOf(File.separator)
+        name.substring(index + 1, name.length)
+    } else ""
+
     if (!name.endsWith(TARGET_FILENAME_SUFFIX)) {
         return true
     }
     propertiesMap[SKIP_FILENAME_PREFIX]?.forEach {
-        if (name.startsWith(it)) {
+        if (name.startsWith(it) || last.startsWith(it)) {
             return true
         }
     }
@@ -66,6 +72,8 @@ fun isIgnoreFileName(name: String): Boolean {
     }
     return false
 }
+
+fun isClassFile(name: String) = name.endsWith(TARGET_FILENAME_SUFFIX)
 
 fun isIgnoreFile(file: File): Boolean {
     return file.isDirectory || isIgnoreFileName(file.name)

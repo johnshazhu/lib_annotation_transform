@@ -4,10 +4,8 @@ import com.lib.annotation.Inject
 import javassist.*
 import javassist.expr.ExprEditor
 import javassist.expr.FieldAccess
-import javassist.expr.NewArray
 import java.io.File
 import java.io.FileInputStream
-import java.util.LinkedList
 
 class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
     /**
@@ -83,43 +81,96 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
         if (ctMembers.isNotEmpty()) {
             for (member in ctMembers) {
                 if (member.hasAnnotation(Inject::class.java)) {
-                        val type = if (isField) "variables" else "methods"
-                        log("\ntransversal ${ctClassName}'s $type")
-                        var targetClassName = getInjectTargetClassName(member)
-                        if (isField && targetClassName.endsWith(KOTLIN_COMPANION_SUFFIX)) {
-                            targetClassName = targetClassName.replace(KOTLIN_COMPANION_SUFFIX, "")
-                        }
-                        val insertInfoList = if (targetMap.containsKey(targetClassName)) {
-                            // 之前存在targetClassName的注入列表，则获取列表
-                            log("targetMap contain key = $targetClassName")
-                            targetMap[targetClassName]
-                        } else {
-                            // 之前不存在targetClassName的注入列表，则创建列表并放入targetMap
-                            log("targetMap add key = $targetClassName")
-                            targetMap[targetClassName] = arrayListOf()
-                            targetMap[targetClassName]
-                        }
-
-                        val info = InsertInfo(
-                            ctClassName,
-                            if (member is CtField) member else null,
-                            if (member is CtMethod) member else null,
-                            if (member is CtMethod) member.parameterTypes else null,
-                            targetClassName,
-                            false
-                        )
-                        insertInfoList!!.add(info)
-
-                        if (file != null) {
-                            log("mapContainInsertClass file key = ${file.absolutePath}")
-                            mapContainInsertClass[file.absolutePath] = true
-                        } else if (entryName != null) {
-                            log("mapContainInsertClass entryName key = $entryName")
-                            mapContainInsertClass[entryName] = true
-                        }
+                    val annotation = member.getAnnotation(Inject::class.java) as Inject
+                    val type = if (isField) "variables" else "methods"
+                    log("transversal ${ctClassName}'s $type")
+                    var targetClassName = getInjectTargetClassName(member)
+                    if (isField && targetClassName.endsWith(KOTLIN_COMPANION_SUFFIX)) {
+                        targetClassName = targetClassName.replace(KOTLIN_COMPANION_SUFFIX, "")
                     }
+                    val insertInfoList = if (targetMap.containsKey(targetClassName)) {
+                        // 之前存在targetClassName的注入列表，则获取列表
+                        log("targetMap contain key = $targetClassName")
+                        targetMap[targetClassName]
+                    } else {
+                        // 之前不存在targetClassName的注入列表，则创建列表并放入targetMap
+                        log("targetMap add key = $targetClassName")
+                        targetMap[targetClassName] = arrayListOf()
+                        targetMap[targetClassName]
+                    }
+
+                    val info = InsertInfo(
+                        ctClassName,
+                        if (member is CtField) member else null,
+                        if (member is CtMethod) member else null,
+                        if (member is CtMethod) member.parameterTypes else null,
+                        targetClassName,
+                        annotation.fieldClzName,
+                        annotation.addCatch,
+                        false
+                    )
+                    insertInfoList!!.add(info)
+
+                    if (file != null) {
+                        log("mapContainInsertClass file key = ${file.absolutePath}")
+                        mapContainInsertClass[file.absolutePath] = true
+                    } else if (entryName != null) {
+                        log("mapContainInsertClass entryName key = $entryName")
+                        mapContainInsertClass[entryName] = true
+                    }
+                }
             }
         }
+    }
+    
+    private fun anonymousInterfaceCallCheck(file: File, ctClass: CtClass): Boolean {
+        var isContainInjectTarget = false
+        val keys = targetMap.keys
+        for (key in keys) {
+            val dest = get(key)
+            if (dest.isInterface) {
+                dest.run {
+                    declaredMethods.forEach {  mtd ->
+                        ctClass.declaredMethods.forEach { target ->
+                            if (target.name.contains(LAMBDA)) {
+                                if (mtd.returnType == target.returnType && mtd.parameterTypes.size == target.parameterTypes.size - 1) {
+                                    var match = true
+                                    for (i in (mtd.parameterTypes.size - 1) downTo 0) {
+                                        if (mtd.parameterTypes[i] != target.parameterTypes[i + 1]) {
+                                            match = false
+                                            break
+                                        }
+                                    }
+                                    if (match) {
+                                        isContainInjectTarget = true
+                                        log("${mtd.name} matched with ${target.name}")
+                                        map[file.absolutePath] = dest.name
+                                        val list = targetMap[key]!!
+                                        if (list.size == 1) {
+                                            list[0].destClassName = ctClass.name
+                                        } else {
+                                            val info = list[0]
+                                            val element = InsertInfo(
+                                                info.srcClassName,
+                                                info.srcField,
+                                                info.srcMtd,
+                                                info.param,
+                                                ctClass.name,
+                                                info.srcFieldType,
+                                                info.catch,
+                                                false
+                                            )
+                                            list.add(element)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return isContainInjectTarget
     }
 
     fun injectPrepare(file: File) {
@@ -127,15 +178,19 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
         val ctClass = makeClass(inputStream)
         inputStream.close()
 
+        var isContainInjectTarget = false
         var isInterfaceImpl = false
         if (!ctClass.isInterface) {
+            isContainInjectTarget = anonymousInterfaceCallCheck(file, ctClass)
             kotlin.runCatching {
-                ctClass.interfaces?.forEach {
-                    if (targetMap.containsKey(it.name)) {
-                        isInterfaceImpl = true
-                        map[file.absolutePath] = it.name
-                        interfaceProcess(ctClass, it)
-                        return@forEach
+                run@ {
+                    ctClass.interfaces?.forEach {
+                        if (targetMap.containsKey(it.name)) {
+                            isInterfaceImpl = true
+                            map[file.absolutePath] = it.name
+                            interfaceProcess(ctClass, it)
+                            return@run
+                        }
                     }
                 }
             }.onFailure {
@@ -143,10 +198,10 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
             }
         }
 
-        if (isInterfaceImpl || targetMap.containsKey(ctClass.name)
+        if (isInterfaceImpl || isContainInjectTarget || targetMap.containsKey(ctClass.name)
             || mapContainInsertClass.containsKey(file.absolutePath)) {
             // 当前文件对应的类为注入目标类，或包含注入信息类，不处理
-            if (!isInterfaceImpl) {
+            if (!isInterfaceImpl && !isContainInjectTarget) {
                 map[file.absolutePath] = ctClass.name
             }
             clsList.add(ctClass)
@@ -173,6 +228,8 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                         info.srcMtd,
                         info.param,
                         interfaceImplClass.name,
+                        info.srcFieldType,
+                        info.catch,
                         true
                     )
                     list.add(element)
@@ -218,10 +275,10 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                 }
 
                 val fields = targetCtCls.declaredFields
-                val methods = targetCtCls.methods
+                val methods = targetCtCls.declaredMethods
                 log("item = $item, fields = $fields")
                 if (item.srcField != null) {
-                    injectField(fields, item.srcField, targetCtCls, directoryName)
+                    injectField(fields, item, targetCtCls, directoryName)
                     insertInfoList.remove(item)
                     i -= 1
                 } else if (item.srcMtd != null) {
@@ -242,7 +299,8 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
         return false
     }
 
-    private fun injectField(fields: Array<CtField>, srcField: CtField, targetCtCls: CtClass, directoryName: String?) {
+    private fun injectField(fields: Array<CtField>, item: InsertInfo, targetCtCls: CtClass, directoryName: String?) {
+        val srcField = item.srcField!!
         if (fields.isNotEmpty()) {
             log("\nvariable ${srcField.name} start inject, target class = ${targetCtCls.name}")
             if (targetCtCls.isFrozen) {
@@ -254,7 +312,10 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                     val fieldInfo = srcField.fieldInfo
                     if (fieldInfo != null) {
                         log("after replace ${field.name}, new value = ${srcField.constantValue}")
-                        val constantValue: Any = srcField.constantValue
+                        //remove old field
+                        targetCtCls.removeField(field)
+
+                        val constantValue: Any? = srcField.constantValue
                         val constructor = targetCtCls.classInitializer
                         constructor?.instrument(object : ExprEditor() {
                             override fun edit(f: FieldAccess) {
@@ -263,31 +324,12 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                                 }
                             }
                         })
-                        //以复制的方式创建一个新的field
-                        val newField = CtField(field, targetCtCls)
-                        //删除旧的field
-                        targetCtCls.removeField(field)
-                        //添加之前创建的field, 并用注入的field的值初始化
-                        when (constantValue) {
-                            is Int -> {
-                                targetCtCls.addField(newField, CtField.Initializer.constant(constantValue))
-                            }
-                            is Double -> {
-                                targetCtCls.addField(newField, CtField.Initializer.constant(constantValue))
-                            }
-                            is String -> {
-                                targetCtCls.addField(newField, CtField.Initializer.constant(constantValue))
-                            }
-                            is Boolean -> {
-                                targetCtCls.addField(newField, CtField.Initializer.constant(constantValue))
-                            }
-                            is Long -> {
-                                targetCtCls.addField(newField, CtField.Initializer.constant(constantValue))
-                            }
-                            is Float -> {
-                                targetCtCls.addField(newField, CtField.Initializer.constant(constantValue))
-                            }
+                        if (item.srcFieldType.isNullOrEmpty() && constantValue != null) {
+                            addFieldByCopy(targetCtCls, field, constantValue)
+                        } else {
+                            addFieldWithType(targetCtCls, field, item.srcFieldType, constantValue)
                         }
+
                         if (!directoryName.isNullOrEmpty()) {
                             targetCtCls.writeFile(directoryName)
                             log("writeFile directoryName : $directoryName")
@@ -300,41 +342,123 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
         }
     }
 
+    private fun addFieldWithType(targetCtCls: CtClass, field: CtField, fieldClassName: String?, value: Any?) {
+        val newFiledInfoBuilder = StringBuilder()
+        newFiledInfoBuilder.run {
+            field.modifiers.let {
+                when {
+                    Modifier.isPublic(it) -> append("public ")
+                    Modifier.isProtected(it) -> append("protected ")
+                    Modifier.isPrivate(it) -> append("private ")
+                    Modifier.isStatic(it) -> append("static ")
+                    Modifier.isFinal(it) -> append("final ")
+                    Modifier.isVolatile(it) -> append("volatile ")
+                    Modifier.isTransient(it) -> append("transient ")
+                    else -> ""
+                }
+            }
+            if (!fieldClassName.isNullOrEmpty()) {
+                append(fieldClassName)
+            } else {
+                append(field.type.name)
+            }
+            append(" ${field.name} = ")
+
+            if (value is String) {
+                append("new String(\"$value\");")
+            } else {
+                append("$value;")
+            }
+        }
+
+        val newFieldStr = newFiledInfoBuilder.toString()
+        log("addFieldWithType str = $newFieldStr")
+        targetCtCls.addField(CtField.make(newFieldStr, targetCtCls))
+    }
+
+    private fun addFieldByCopy(targetCtCls: CtClass, field: CtField, constantValue: Any?) {
+        // new Field by copy
+        val newField = CtField(field, targetCtCls)
+
+        // add newField, and initialize it with constantValue
+        when (constantValue) {
+            is Int -> {
+                targetCtCls.addField(newField, CtField.Initializer.constant(constantValue))
+            }
+            is Double -> {
+                targetCtCls.addField(newField, CtField.Initializer.constant(constantValue))
+            }
+            is String -> {
+                targetCtCls.addField(newField, CtField.Initializer.constant(constantValue))
+            }
+            is Boolean -> {
+                targetCtCls.addField(newField, CtField.Initializer.constant(constantValue))
+            }
+            is Long -> {
+                targetCtCls.addField(newField, CtField.Initializer.constant(constantValue))
+            }
+            is Float -> {
+                targetCtCls.addField(newField, CtField.Initializer.constant(constantValue))
+            }
+        }
+    }
+
     private fun injectMethod(methods: Array<CtMethod>, item: InsertInfo, targetCtCls: CtClass, directoryName: String?) {
-        log("\nstart method inject : ${item.srcMtd}, directoryName = $directoryName")
+        log("\nstart method inject : ${item.srcMtd}, directoryName = $directoryName, ${targetCtCls.name}")
         val srcMethod: CtMethod = item.srcMtd!!
         val srcClsName = item.srcClassName
         val annotation = srcMethod.getAnnotation(Inject::class.java) as Inject
         val clsName = getInjectTargetClassName(srcMethod)
+        val annotationTarget = get(clsName)
+        if (annotationTarget.isInterface) {
+            log("injectMethod's original target is interface = $clsName")
+        }
 
         if (targetCtCls.isFrozen) {
             targetCtCls.defrost()
         }
         var another: CtMethod? = null
         for (m in methods) {
-            if (m.name == annotation.name) {
-                val targetParameters = m.parameterTypes
-                val srcParameters = srcMethod.parameterTypes
-                var match = true
-                if (targetParameters.size == srcParameters.size) {
-                    var i = 0
-                    while (i < targetParameters.size) {
-                        if (targetParameters[i].name != srcParameters[i].name) {
-                            match = false
-                            break
+            var isAnonymousInterfaceCall = false
+            if (annotationTarget.isInterface && m.name.contains(LAMBDA)) {
+                var isParameterMath = true
+                for (interfaceMtd in annotationTarget.declaredMethods) {
+                    if (interfaceMtd.returnType == m.returnType && interfaceMtd.parameterTypes.size == m.parameterTypes.size - 1) {
+                        for (i in (interfaceMtd.parameterTypes.size - 1) downTo 0) {
+                            if (interfaceMtd.parameterTypes[i] != m.parameterTypes[i + 1]) {
+                                isParameterMath = false
+                                break
+                            }
                         }
-                        ++i
                     }
-                } else {
-                    match = false
+                }
+                isAnonymousInterfaceCall = isParameterMath
+            }
+            if (m.name == annotation.name || isAnonymousInterfaceCall) {
+                if (!isAnonymousInterfaceCall) {
+                    val targetParameters = m.parameterTypes
+                    val srcParameters = srcMethod.parameterTypes
+                    var match = true
+                    if (targetParameters.size == srcParameters.size) {
+                        var i = 0
+                        while (i < targetParameters.size) {
+                            if (targetParameters[i].name != srcParameters[i].name) {
+                                match = false
+                                break
+                            }
+                            ++i
+                        }
+                    } else {
+                        match = false
+                    }
+
+                    if (!match) {
+                        log("method : ${m.name} parameter does not match")
+                        continue
+                    }
                 }
 
-                if (!match) {
-                    log("method : ${m.name} parameter does not match")
-                    continue
-                }
-
-                log("method : ${m.name}\n source method class : $srcClsName")
+                log("method : ${m.name}, source method class : $srcClsName")
                 val mtdCls = get(srcClsName)
                 if (mtdCls.isFrozen) {
                     mtdCls.defrost()
@@ -345,13 +469,14 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                     log("another $another")
                 }
 
+                val args = getArgsForInsertSource(m, isAnonymousInterfaceCall)
                 var code: String = ""
                 if (mtdCls.isKotlin) {
                     log("source method's class is kotlin class")
                     // Kotlin中object反编译为java代码时，为一单例类，访问其中方法需要使用单例对象
                     for (field in mtdCls.fields) {
                         if (field.name == "INSTANCE") {
-                            code = mtdCls.name + ".INSTANCE." + srcMethod.name + "(\$\$);"
+                            code = mtdCls.name + ".INSTANCE." + srcMethod.name + "($args);"
                             if (srcMethod.returnType == CtClass.booleanType) {
                                 val tmp = code.substring(0, code.length - 1)
                                 code = "if ($tmp) return;"
@@ -360,13 +485,17 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                         }
                     }
                 } else if (Modifier.isPublic(srcMethod.modifiers) && Modifier.isStatic(srcMethod.modifiers)) {
-                    code = mtdCls.name + "." + srcMethod.name + "(\$\$);"
+                    code = mtdCls.name + "." + srcMethod.name + "(${args});"
                     if (srcMethod.returnType == CtClass.booleanType) {
                         val tmp = code.substring(0, code.length - 1)
                         code = "if ($tmp) return;"
                     }
                 }
-                log("inject code\n$code\nmodifier : ${srcMethod.modifiers}")
+                if (code.isNotEmpty()) {
+                    log("inject code\n$code\nmodifier : ${srcMethod.modifiers}")
+                } else {
+                    log("inject method use method copy")
+                }
                 log("inject class : $clsName, replace = ${annotation.replace}, before = ${annotation.before}")
                 if (code.isEmpty()) {
                     if (clsName.endsWith(KOTLIN_COMPANION_SUFFIX)) {
@@ -391,6 +520,12 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                 } else {
                     m.insertAfter(code)
                 }
+                if (!item.catch.isNullOrEmpty()) {
+                    val throwableType = get(Throwable::class.java.name)
+                    m.addCatch(item.catch, throwableType)
+                    throwableType.detach()
+                    log("add catch : ${item.catch}")
+                }
                 if (!directoryName.isNullOrEmpty()) {
                     targetCtCls.writeFile(directoryName)
                     log("writeFile directoryName : $directoryName")
@@ -401,8 +536,28 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
         }
     }
 
+    private fun getArgsForInsertSource(mtd: CtMethod, isAnonymousCall: Boolean): String {
+        // $$ represent all parameters of the method
+        var args = ""
+        if (isAnonymousCall) {
+            // static method, $0 is not available.
+            // lambda of anonymous interface call's first parameter is this reference, we do not need it.
+            // so we start from the second parameter.
+            for (i in 2..mtd.parameterTypes.size) {
+                args += "\$$i,"
+            }
+            if (args.isNotEmpty()) {
+                args = args.substring(0, args.length - 1)
+            }
+        }
+        return args.ifEmpty { "\$\$" }
+    }
+
     fun release() {
         map.clear()
+        if (targetMap.isNotEmpty()) {
+            println("release targetMap = $targetMap")
+        }
         targetMap.clear()
         mapContainInsertClass.clear()
 

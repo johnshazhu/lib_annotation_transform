@@ -10,7 +10,6 @@ import org.apache.commons.io.IOUtils
 import org.gradle.api.Plugin
 import org.gradle.api.Project
 import java.io.File
-import java.io.FileFilter
 import java.io.FileOutputStream
 import java.util.*
 import java.util.jar.JarFile
@@ -89,9 +88,9 @@ class AnnotationPlugin : Transform(), Plugin<Project> {
 
     private fun collectDirectoryInput(directoryInput: DirectoryInput) {
         if (directoryInput.file.isDirectory) {
-            directoryInput.file.listFiles(FileFilter {
-                !isIgnoreFile(it) && it.name.endsWith(".class")
-            })?.forEach {
+            directoryInput.file.walkTopDown().filter {
+                !isIgnoreFileName(it.name) && isClassFile(it.name)
+            }.forEach {
                 clsPool.appendClassPathByFile(it)
                 clsPool.collectUsedClass(it, null, null)
             }
@@ -137,13 +136,15 @@ class AnnotationPlugin : Transform(), Plugin<Project> {
 
     private fun handleDirectoryInput(directoryInput: DirectoryInput, outputProvider: TransformOutputProvider, inject: Boolean) {
         if (directoryInput.file.isDirectory) {
-            directoryInput.file.listFiles(FileFilter {
-                !isIgnoreFile(it)
-            })?.forEach {
-                if (!inject) {
-                    clsPool.injectPrepare(it)
-                } else {
-                    clsPool.injectInsertInfo(it.absolutePath, directoryInput.file.absolutePath)
+            directoryInput.file.walkTopDown().filter {
+                !isIgnoreFileName(it.name)
+            }.forEach {
+                if (!it.isDirectory && isClassFile(it.name)) {
+                    if (!inject) {
+                        clsPool.injectPrepare(it)
+                    } else {
+                        clsPool.injectInsertInfo(it.absolutePath, directoryInput.file.absolutePath)
+                    }
                 }
             }
         }
