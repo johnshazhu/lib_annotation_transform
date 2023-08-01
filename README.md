@@ -4,9 +4,11 @@ needs to be used together with [lib_annotation](https://github.com/johnshazhu/li
 usage
 ```
 plugins {
-  id("io.github.johnshazhu.lib_annotation_transform") version "1.0.3"
+  id("io.github.johnshazhu.lib_annotation_transform") version "1.0.4"
 }
 ```
+You can view code in module test, it shows how to use @Inject annotation
+inject method or field.
 
 In our project, we may need inject some code to record log information. 
 For example, we want record when activity was resumed. We can add log in
@@ -20,7 +22,7 @@ open class BaseActivity : Activity() {
 Use this plugin and @Inject in [lib_annotation](https://github.com/johnshazhu/lib_annotation), 
  we can do it in the way as follows:
 ```
-implementation("io.github.johnshazhu:lib_annotation:1.0.0")
+implementation("io.github.johnshazhu:lib_annotation:1.0.1")
 ```
 Add @Inject annotation in the log method, the annotation info will be collected in transform phase, and will use
 javassist to insert the code into target method. All the progress, the target class looks like nothing happened.
@@ -34,7 +36,7 @@ Support custom config, we can add config info in transform_config.properties.
 ```
 log_enable=true
 skip_package=org.greenrobot,com.networkbench
-skip_filename_prefix=R.,R$,kotlin,android
+skip_filename_prefix=R.,R$,kotlin,android,META-INF,com/lib/annotation
 skip_filename_contain=BuildConfig,intellij,jetbrains,io.github.johnshazhu
 skip_jar_path_contain=.gradle/caches
 keep_jar_path_contain=lib_annotation
