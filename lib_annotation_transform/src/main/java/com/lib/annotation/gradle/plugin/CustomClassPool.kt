@@ -110,6 +110,13 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
         }
     }
 
+    private fun checkIsMatchNormalMethod(src: CtMethod, target: CtMethod): Boolean {
+        return !target.hasAnnotation(Inject::class.java) &&
+                target.name == src.name &&
+                target.parameterTypes.contentEquals(src.parameterTypes)
+
+    }
+
     private fun checkIsMatchLambdaMethod(mtd: CtMethod, target: CtMethod): Boolean {
         if (target.name.contains(LAMBDA)) {
             // anonymous interface lambda call's first parameter is reference of this object
@@ -157,8 +164,7 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                         // traversal current class's declared methods
                         for (target in ctClass.declaredMethods) {
                             // normal interface impl and anonymous lambda call
-                            if ((target.name == mtd.name && target.parameterTypes.contentEquals(mtd.parameterTypes)) ||
-                                (checkIsMatchLambdaMethod(mtd, target))) {
+                            if (checkIsMatchNormalMethod(mtd, target) || checkIsMatchLambdaMethod(mtd, target)) {
                                 isMatched = true
                                 isContainInjectTarget = true
                                 val targetInfoList = if (targetMap.containsKey(ctClass.name)) {
@@ -383,7 +389,6 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
         val srcMethod: CtMethod = item.srcMtd!!
         val srcClsName = item.srcClassName
         val annotation = srcMethod.getAnnotation(Inject::class.java) as Inject
-        val srcMethodName = annotation.name.ifEmpty { item.srcMtd.name }
         val clsName = getInjectTargetClassName(srcMethod)
         val annotationTarget = get(clsName)
 
@@ -407,7 +412,7 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                 isAnonymousInterfaceCall = isParameterMath
             }
 
-            if ((m.name == srcMethodName && m.parameterTypes.contentEquals(item.srcMtd.parameterTypes)) || isAnonymousInterfaceCall) {
+            if (checkIsMatchNormalMethod(srcMethod, m) || isAnonymousInterfaceCall) {
                 val mtdCls = get(srcClsName)
                 if (mtdCls.isFrozen) {
                     mtdCls.defrost()
