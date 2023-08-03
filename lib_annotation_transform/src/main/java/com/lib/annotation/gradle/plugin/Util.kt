@@ -7,16 +7,18 @@ import javassist.CtMethod
 import javassist.bytecode.AnnotationsAttribute
 import javassist.bytecode.annotation.ClassMemberValue
 import org.gradle.api.Project
+import org.gradle.api.logging.LogLevel
 import java.io.File
 
 const val CONFIG_FILENAME = "transform_config.properties"
 const val SKIP_PACKAGE = "skip_package"
 const val SKIP_FILENAME_PREFIX = "skip_filename_prefix"
 const val SKIP_FILENAME_CONTAIN = "skip_filename_contain"
-const val SKIP_JAR_PATH_CONTAIN = "skip_jar_path_contain"
-const val KEEP_JAR_PATH_CONTAIN = "keep_jar_path_contain"
+//const val SKIP_JAR_PATH_CONTAIN = "skip_jar_path_contain"
+//const val KEEP_JAR_PATH_CONTAIN = "keep_jar_path_contain"
 const val TARGET_FILENAME_SUFFIX = ".class"
 const val LOG_ENABLE = "log_enable"
+const val LOG_SAVE_FILE_ENABLE = "save_log_enable"
 const val LOG_TAG = "[AnnotationPlugin]"
 const val VERSION_PROPERTIES = "version.properties"
 const val VERSION = "version"
@@ -25,6 +27,7 @@ const val LAMBDA = "\$lambda"
 
 val propertiesMap = hashMapOf<String, List<String>>()
 var logEnable = false
+var saveLogEnable = false
 
 fun getProperties(project: Project) {
     val path = "${project.rootDir.absolutePath}/$CONFIG_FILENAME"
@@ -41,6 +44,7 @@ fun getProperties(project: Project) {
             }
         }
         logEnable = propertiesMap[LOG_ENABLE]?.contains("true") ?: false
+        saveLogEnable = propertiesMap[LOG_SAVE_FILE_ENABLE]?.contains("true") ?: false
     } else {
         println("$path does not exist, please check")
     }
@@ -51,14 +55,13 @@ fun isFilterPackage(name: String): Boolean {
 }
 
 fun isIgnoreFileName(name: String): Boolean {
+    if (!name.endsWith(TARGET_FILENAME_SUFFIX)) {
+        return true
+    }
     val last = if (name.contains(File.separator)) {
         val index = name.lastIndexOf(File.separator)
         name.substring(index + 1, name.length)
     } else ""
-
-    if (!name.endsWith(TARGET_FILENAME_SUFFIX)) {
-        return true
-    }
     propertiesMap[SKIP_FILENAME_PREFIX]?.forEach {
         if (name.startsWith(it) || last.startsWith(it)) {
             return true
@@ -75,17 +78,17 @@ fun isIgnoreFileName(name: String): Boolean {
 
 fun isClassFile(name: String) = name.endsWith(TARGET_FILENAME_SUFFIX)
 
-fun isIgnoreFile(file: File): Boolean {
-    return file.isDirectory || isIgnoreFileName(file.name)
-}
+//fun isIgnoreFile(file: File): Boolean {
+//    return file.isDirectory || isIgnoreFileName(file.name)
+//}
 
-fun isIgnoreJar(path: String): Boolean {
-    return match(path, SKIP_JAR_PATH_CONTAIN)
-}
-
-fun isKeepJar(path: String): Boolean {
-    return match(path, KEEP_JAR_PATH_CONTAIN)
-}
+//fun isIgnoreJar(path: String): Boolean {
+//    return match(path, SKIP_JAR_PATH_CONTAIN)
+//}
+//
+//fun isKeepJar(path: String): Boolean {
+//    return match(path, KEEP_JAR_PATH_CONTAIN)
+//}
 
 private fun match(path: String, key: String): Boolean {
     propertiesMap[key]?.forEach {
@@ -125,8 +128,12 @@ fun getAnnotationClassValue(
     return (annotation?.getMemberValue(member) as? ClassMemberValue)?.value
 }
 
-fun log(msg: String?) {
+fun isLogEnable() = logEnable
+
+fun isSaveLogToFile() = saveLogEnable
+
+fun log(msg: String?, level: LogLevel = LogLevel.INFO) {
     if (logEnable) {
-        println("$LOG_TAG $msg")
+        CustomLogger.log("$LOG_TAG $msg", level)
     }
 }

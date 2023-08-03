@@ -4,8 +4,11 @@ import com.lib.annotation.Inject
 import javassist.*
 import javassist.expr.ExprEditor
 import javassist.expr.FieldAccess
+import org.gradle.api.logging.LogLevel
 import java.io.File
 import java.io.FileInputStream
+import java.io.InputStream
+import java.util.concurrent.ConcurrentHashMap
 
 class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
     /**
@@ -19,20 +22,15 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
     private val pathList = arrayListOf<ClassPath>()
 
     /**
-     * clsList keep CtClasses will be used
-     * */
-    private val clsList = arrayListOf<CtClass>()
-
-    /**
      * keep mapping info of target class name -> list info of field/method to be processed
      * */
-    private val targetMap = hashMapOf<String, ArrayList<InsertInfo>>()
+    private val targetMap = ConcurrentHashMap<String, ArrayList<InsertInfo>>()
 
     /**
      * keep class file info contain @Inject annotation. key may be path of class file, entry
      * name in jar or CtClass name.
      * */
-    private val mapContainInsertClass = hashMapOf<String, Boolean>()
+    private val insertSourceMap = hashMapOf<String, Boolean>()
 
     init {
         cacheOpenedJarFile = false
@@ -82,19 +80,16 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
             for (member in ctMembers) {
                 if (member.hasAnnotation(Inject::class.java)) {
                     val annotation = member.getAnnotation(Inject::class.java) as Inject
-                    val type = if (isField) "variables" else "methods"
-                    log("transversal ${ctClassName}'s $type")
                     var targetClassName = getInjectTargetClassName(member)
                     if (isField && targetClassName.endsWith(KOTLIN_COMPANION_SUFFIX)) {
                         targetClassName = targetClassName.replace(KOTLIN_COMPANION_SUFFIX, "")
                     }
                     val insertInfoList = if (targetMap.containsKey(targetClassName)) {
                         // 之前存在targetClassName的注入列表，则获取列表
-                        log("targetMap contain key = $targetClassName")
                         targetMap[targetClassName]
                     } else {
                         // 之前不存在targetClassName的注入列表，则创建列表并放入targetMap
-                        log("targetMap add key = $targetClassName")
+                        log("targetMap add key = $targetClassName, ${(entryName ?: "").ifEmpty { file?.absolutePath }}")
                         targetMap[targetClassName] = arrayListOf()
                         targetMap[targetClassName]
                     }
@@ -103,67 +98,90 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                         ctClassName,
                         if (member is CtField) member else null,
                         if (member is CtMethod) member else null,
-                        if (member is CtMethod) member.parameterTypes else null,
                         targetClassName,
                         annotation.fieldClzName,
                         annotation.addCatch,
                         false
                     )
                     insertInfoList!!.add(info)
-
-                    if (file != null) {
-                        log("mapContainInsertClass file key = ${file.absolutePath}")
-                        mapContainInsertClass[file.absolutePath] = true
-                    } else if (entryName != null) {
-                        log("mapContainInsertClass entryName key = $entryName")
-                        mapContainInsertClass[entryName] = true
-                    }
+                    insertSourceMap[ctClassName] = true
                 }
             }
         }
     }
-    
-    private fun anonymousInterfaceCallCheck(file: File, ctClass: CtClass): Boolean {
+
+    private fun checkIsMatchLambdaMethod(mtd: CtMethod, target: CtMethod): Boolean {
+        if (target.name.contains(LAMBDA)) {
+            // anonymous interface lambda call's first parameter is reference of this object
+            if (mtd.returnType == target.returnType &&
+                mtd.parameterTypes.size == target.parameterTypes.size - 1) {
+                var match = true
+                for (i in (mtd.parameterTypes.size - 1) downTo 0) {
+                    if (mtd.parameterTypes[i] != target.parameterTypes[i + 1]) {
+                        match = false
+                        break
+                    }
+                }
+                return match
+            }
+        }
+        return false
+    }
+
+    private fun checkInterfaceInject(ctClass: CtClass, assignedKey: String? = null): Boolean {
         var isContainInjectTarget = false
         val keys = targetMap.keys
         for (key in keys) {
+            if (assignedKey != null && assignedKey != key) {
+                continue
+            }
             val dest = get(key)
+            // only check interface impl
             if (dest.isInterface) {
+                val insertInfoList = targetMap[key]!!
+                val info = insertInfoList[0]
+                val targetMethodNameList = insertInfoList.filter { insertInfo ->
+                    !insertInfo.srcMtd?.name.isNullOrEmpty()
+                }.map { insertInfo ->
+                    insertInfo.srcMtd!!.name
+                }.distinct()
                 dest.run {
-                    declaredMethods.forEach {  mtd ->
-                        ctClass.declaredMethods.forEach { target ->
-                            if (target.name.contains(LAMBDA)) {
-                                if (mtd.returnType == target.returnType && mtd.parameterTypes.size == target.parameterTypes.size - 1) {
-                                    var match = true
-                                    for (i in (mtd.parameterTypes.size - 1) downTo 0) {
-                                        if (mtd.parameterTypes[i] != target.parameterTypes[i + 1]) {
-                                            match = false
-                                            break
-                                        }
-                                    }
-                                    if (match) {
-                                        isContainInjectTarget = true
-                                        log("${mtd.name} matched with ${target.name}")
-                                        map[file.absolutePath] = dest.name
-                                        val list = targetMap[key]!!
-                                        if (list.size == 1) {
-                                            list[0].destClassName = ctClass.name
-                                        } else {
-                                            val info = list[0]
-                                            val element = InsertInfo(
-                                                info.srcClassName,
-                                                info.srcField,
-                                                info.srcMtd,
-                                                info.param,
-                                                ctClass.name,
-                                                info.srcFieldType,
-                                                info.catch,
-                                                false
-                                            )
-                                            list.add(element)
-                                        }
+                    // traversal interface's declared methods
+                    for (mtd in declaredMethods) {
+                        if (!targetMethodNameList.contains(mtd.name)) {
+//                            log("skip interface method ${mtd.name}")
+                            continue
+                        }
+
+                        var isMatched = false
+                        // traversal current class's declared methods
+                        for (target in ctClass.declaredMethods) {
+                            // normal interface impl and anonymous lambda call
+                            if ((target.name == mtd.name && target.parameterTypes.contentEquals(mtd.parameterTypes)) ||
+                                (checkIsMatchLambdaMethod(mtd, target))) {
+                                isMatched = true
+                                isContainInjectTarget = true
+                                val targetInfoList = if (targetMap.containsKey(ctClass.name)) {
+                                    targetMap[ctClass.name]!!
+                                } else {
+                                    arrayListOf<InsertInfo>().apply {
+                                        targetMap[ctClass.name] = this
                                     }
                                 }
+                                val mtdNameList = targetInfoList.filter { info ->
+                                    !info.srcMtd?.name.isNullOrEmpty()
+                                }.map { info ->
+                                    info.srcMtd!!.name
+                                }.distinct()
+                                if (!mtdNameList.contains(info.srcMtd?.name)) {
+                                    targetInfoList.add(InsertInfo(info.srcClassName, info.srcField,
+                                        info.srcMtd, ctClass.name,
+                                        info.srcFieldType, info.catch, true)
+                                    )
+                                }
+                            }
+                            if (isMatched) {
+                                break
                             }
                         }
                     }
@@ -173,110 +191,74 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
         return isContainInjectTarget
     }
 
-    fun injectPrepare(file: File) {
-        val inputStream = FileInputStream(file)
-        val ctClass = makeClass(inputStream)
-        inputStream.close()
-
+    fun injectPrepare(ctClass: CtClass, path: String) {
         var isContainInjectTarget = false
         var isInterfaceImpl = false
         if (!ctClass.isInterface) {
-            isContainInjectTarget = anonymousInterfaceCallCheck(file, ctClass)
+            isContainInjectTarget = checkInterfaceInject(ctClass)
             kotlin.runCatching {
-                run@ {
-                    ctClass.interfaces?.forEach {
-                        if (targetMap.containsKey(it.name)) {
+                ctClass.interfaces?.let { interfaceClassList ->
+                    for (cls in interfaceClassList) {
+                        if (targetMap.containsKey(cls.name)) {
                             isInterfaceImpl = true
-                            map[file.absolutePath] = it.name
-                            interfaceProcess(ctClass, it)
-                            return@run
+                            checkInterfaceInject(ctClass, cls.name)
                         }
                     }
                 }
             }.onFailure {
-                it.printStackTrace()
+                log("injectPrepare ctClass.interfaces exception = ${it.message}", LogLevel.WARN)
             }
         }
 
-        if (isInterfaceImpl || isContainInjectTarget || targetMap.containsKey(ctClass.name)
-            || mapContainInsertClass.containsKey(file.absolutePath)) {
-            // 当前文件对应的类为注入目标类，或包含注入信息类，不处理
-            if (!isInterfaceImpl && !isContainInjectTarget) {
-                map[file.absolutePath] = ctClass.name
-            }
-            clsList.add(ctClass)
-        } else {
-            // 无用类
-            ctClass.detach()
+        if (isInterfaceImpl || isContainInjectTarget || targetMap.containsKey(ctClass.name)) {
+            log("add to target path map = $path")
+            map[path] = ctClass.name
         }
+        ctClass.detach()
     }
 
-    private fun interfaceProcess(interfaceImplClass: CtClass, iClass: CtClass) {
-        for (member in iClass.declaredMethods) {
-            var found = false
-            for (mtd in interfaceImplClass.methods) {
-                if (member.name == mtd.name) {
-                found = true
-                val list = targetMap[iClass.name]!!
-                if (list.size == 1) {
-                    list[0].destClassName = interfaceImplClass.name
-                } else {
-                    val info = list[0]
-                    val element = InsertInfo(
-                        info.srcClassName,
-                        info.srcField,
-                        info.srcMtd,
-                        info.param,
-                        interfaceImplClass.name,
-                        info.srcFieldType,
-                        info.catch,
-                        true
-                    )
-                    list.add(element)
-                }
-                break
-            }
-            }
-            if (found) {
-                break
-            }
-        }
-    }
-
-    fun injectInsertInfo(absolutePath: String?, directoryName: String) {
-        if (targetMap.isEmpty()) {
+    fun injectInsertInfo(absolutePath: String, directoryName: String) {
+        if (targetMap.isEmpty() || !map.containsKey(absolutePath)) {
             return
         }
 
-        if (!absolutePath.isNullOrEmpty()) {
-            if (!map.containsKey(absolutePath)) {
-                log("$absolutePath is not target class file")
-                return
-            }
-            val clsName = map[absolutePath]!!
-            injectItem(clsName, directoryName)
-        }
+        val clsName = map[absolutePath]
+        val ctClass = get(clsName) ?: makeClass(File(absolutePath).inputStream())
+        injectItem(ctClass, ctClass.name, directoryName)
     }
 
-    fun injectItem(clsName: String, directoryName: String?): Boolean {
+    fun injectInJar(entryName: String, inputStream: InputStream): CtClass {
+        val ctClass = get(map[entryName]) ?: makeClass(inputStream)
+
+        injectItem(ctClass, ctClass.name, null)
+
+        return ctClass
+    }
+
+    private fun injectItem(ctClass: CtClass, clsName: String, directoryName: String?) {
         if (targetMap.containsKey(clsName)) {
             val insertInfoList = targetMap[clsName]
             if (insertInfoList.isNullOrEmpty()) {
-                return false
+                return
             }
 
             var i = 0
+            log("injectItem ${insertInfoList.size} = $clsName")
             while (i < insertInfoList.size) {
                 val item = insertInfoList[i]
+                if (clsName != item.destClassName) {
+                    ++i
+                    continue
+                }
                 val targetCtCls = get(item.destClassName)
-                log("real inject target class : ${targetCtCls.name}")
+//                log("real inject target class : ${targetCtCls.name}")
                 if (targetCtCls.isFrozen) {
                     targetCtCls.defrost()
                 }
 
                 val fields = targetCtCls.declaredFields
                 val methods = targetCtCls.declaredMethods
-                log("item = $item, fields = $fields")
+//                log("item = $item, fields = $fields")
                 if (item.srcField != null) {
                     injectField(fields, item, targetCtCls, directoryName)
                     insertInfoList.remove(item)
@@ -290,28 +272,26 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
             }
 
             if (insertInfoList.isEmpty()) {
-                log("targetMap remove $clsName")
+                log("targetMap remove $clsName\n")
                 targetMap.remove(clsName)
+                ctClass.detach()
             }
-            return true
         }
-
-        return false
     }
 
     private fun injectField(fields: Array<CtField>, item: InsertInfo, targetCtCls: CtClass, directoryName: String?) {
         val srcField = item.srcField!!
         if (fields.isNotEmpty()) {
-            log("\nvariable ${srcField.name} start inject, target class = ${targetCtCls.name}")
+//            log("variable ${srcField.name} start inject, target class = ${targetCtCls.name}")
             if (targetCtCls.isFrozen) {
                 targetCtCls.defrost()
             }
             for (field in fields) {
                 if (field.name == srcField.name) {
-                    log("found variable to be replaced ${field.name}")
+//                    log("found variable to be replaced ${field.name}")
                     val fieldInfo = srcField.fieldInfo
                     if (fieldInfo != null) {
-                        log("after replace ${field.name}, new value = ${srcField.constantValue}")
+//                        log("after replace ${field.name}, new value = ${srcField.constantValue}")
                         //remove old field
                         targetCtCls.removeField(field)
 
@@ -329,13 +309,8 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                         } else {
                             addFieldWithType(targetCtCls, field, item.srcFieldType, constantValue)
                         }
-
-                        if (!directoryName.isNullOrEmpty()) {
-                            targetCtCls.writeFile(directoryName)
-                            log("writeFile directoryName : $directoryName")
-                        }
                     }
-                    log("variable ${srcField.name} inject finish\n")
+                    log("variable ${srcField.name} inject\n")
                     break
                 }
             }
@@ -372,7 +347,7 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
         }
 
         val newFieldStr = newFiledInfoBuilder.toString()
-        log("addFieldWithType str = $newFieldStr")
+//        log("addFieldWithType str = $newFieldStr")
         targetCtCls.addField(CtField.make(newFieldStr, targetCtCls))
     }
 
@@ -404,20 +379,17 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
     }
 
     private fun injectMethod(methods: Array<CtMethod>, item: InsertInfo, targetCtCls: CtClass, directoryName: String?) {
-        log("\nstart method inject : ${item.srcMtd}, directoryName = $directoryName, ${targetCtCls.name}")
+//        log("start method inject : ${item.srcMtd.name}, directoryName = $directoryName, ${targetCtCls.name}")
         val srcMethod: CtMethod = item.srcMtd!!
         val srcClsName = item.srcClassName
         val annotation = srcMethod.getAnnotation(Inject::class.java) as Inject
+        val srcMethodName = annotation.name.ifEmpty { item.srcMtd.name }
         val clsName = getInjectTargetClassName(srcMethod)
         val annotationTarget = get(clsName)
-        if (annotationTarget.isInterface) {
-            log("injectMethod's original target is interface = $clsName")
-        }
 
         if (targetCtCls.isFrozen) {
             targetCtCls.defrost()
         }
-        var another: CtMethod? = null
         for (m in methods) {
             var isAnonymousInterfaceCall = false
             if (annotationTarget.isInterface && m.name.contains(LAMBDA)) {
@@ -434,69 +406,42 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                 }
                 isAnonymousInterfaceCall = isParameterMath
             }
-            if (m.name == annotation.name || isAnonymousInterfaceCall) {
-                if (!isAnonymousInterfaceCall) {
-                    val targetParameters = m.parameterTypes
-                    val srcParameters = srcMethod.parameterTypes
-                    var match = true
-                    if (targetParameters.size == srcParameters.size) {
-                        var i = 0
-                        while (i < targetParameters.size) {
-                            if (targetParameters[i].name != srcParameters[i].name) {
-                                match = false
-                                break
-                            }
-                            ++i
-                        }
-                    } else {
-                        match = false
-                    }
 
-                    if (!match) {
-                        log("method : ${m.name} parameter does not match")
-                        continue
-                    }
-                }
-
-                log("method : ${m.name}, source method class : $srcClsName")
+            if ((m.name == srcMethodName && m.parameterTypes.contentEquals(item.srcMtd.parameterTypes)) || isAnonymousInterfaceCall) {
                 val mtdCls = get(srcClsName)
                 if (mtdCls.isFrozen) {
                     mtdCls.defrost()
                 }
 
-                if (item.isInterface) {
-                    another = mtdCls.getDeclaredMethod(m.name, item.param)
-                    log("another $another")
-                }
-
                 val args = getArgsForInsertSource(m, isAnonymousInterfaceCall)
                 var code: String = ""
                 if (mtdCls.isKotlin) {
-                    log("source method's class is kotlin class")
                     // Kotlin中object反编译为java代码时，为一单例类，访问其中方法需要使用单例对象
                     for (field in mtdCls.fields) {
                         if (field.name == "INSTANCE") {
                             code = mtdCls.name + ".INSTANCE." + srcMethod.name + "($args);"
                             if (srcMethod.returnType == CtClass.booleanType) {
-                                val tmp = code.substring(0, code.length - 1)
-                                code = "if ($tmp) return;"
+                                code = getReturnTypeCheckedCode(annotation, m, code)
                             }
                             break
                         }
                     }
                 } else if (Modifier.isPublic(srcMethod.modifiers) && Modifier.isStatic(srcMethod.modifiers)) {
                     code = mtdCls.name + "." + srcMethod.name + "(${args});"
-                    if (srcMethod.returnType == CtClass.booleanType) {
-                        val tmp = code.substring(0, code.length - 1)
-                        code = "if ($tmp) return;"
+                    if (annotation.replace) {
+                        if (srcMethod.returnType != CtClass.voidType) {
+                            code = "return $code"
+                        }
+                    } else if ((srcMethod.returnType == CtClass.booleanType)) {
+                        code = getReturnTypeCheckedCode(annotation, m, code)
                     }
                 }
                 if (code.isNotEmpty()) {
-                    log("inject code\n$code\nmodifier : ${srcMethod.modifiers}")
+//                    log("inject code\n$code\nmodifier : ${srcMethod.modifiers}")
                 } else {
-                    log("inject method use method copy")
+//                    log("inject method use method copy")
                 }
-                log("inject class : $clsName, replace = ${annotation.replace}, before = ${annotation.before}")
+//                log("inject class : $clsName, replace = ${annotation.replace}, before = ${annotation.before}")
                 if (code.isEmpty()) {
                     if (clsName.endsWith(KOTLIN_COMPANION_SUFFIX)) {
                         srcMethod.addLocalVariable("this", targetCtCls)
@@ -509,14 +454,15 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                         }
                         m.setBody(srcMethod, null)
                     } else {
-                        m.setBody(code)
+                        kotlin.runCatching {
+                            m.setBody(code)
+                        }.onFailure {
+                            log("CannotCompileException code = $code, mtd = $m, targetCls = ${targetCtCls.name}, src = $srcClsName", LogLevel.ERROR)
+                            throw CannotCompileException(it.message)
+                        }
                     }
                 } else if (annotation.before) {
-                    if (another != null) {
-                        another.insertBefore(code)
-                    } else {
-                        m.insertBefore(code)
-                    }
+                    m.insertBefore(code)
                 } else {
                     m.insertAfter(code)
                 }
@@ -526,14 +472,23 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                     throwableType.detach()
                     log("add catch : ${item.catch}")
                 }
-                if (!directoryName.isNullOrEmpty()) {
-                    targetCtCls.writeFile(directoryName)
-                    log("writeFile directoryName : $directoryName")
-                }
-                log("method ${m.name} inject finish\n")
+                log("${targetCtCls.simpleName} method ${m.name} finish")
                 break
             }
         }
+    }
+
+    private fun getReturnTypeCheckedCode(annotation: Inject, m: CtMethod, codeParam: String): String {
+        var code = codeParam
+        val tmp = code.substring(0, code.length - 1)
+        if (annotation.before) {
+            if (m.returnType == CtClass.voidType) {
+                code = "if ($tmp) return;"
+            } else if (m.returnType == CtClass.booleanType) {
+                code = "if ($tmp) return true;"
+            }
+        }
+        return code
     }
 
     private fun getArgsForInsertSource(mtd: CtMethod, isAnonymousCall: Boolean): String {
@@ -556,36 +511,32 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
     fun release() {
         map.clear()
         if (targetMap.isNotEmpty()) {
-            println("release targetMap = $targetMap")
+            log("release targetMap = ${targetMap.size}")
+            targetMap.keys.forEach {
+                log("$it = ${targetMap[it]}")
+            }
         }
         targetMap.clear()
-        mapContainInsertClass.clear()
-
         for (path in pathList) {
             removeClassPath(path)
         }
         pathList.clear()
-
-        for (cls in clsList) {
-            cls.detach()
-        }
-        clsList.clear()
-
         classes.clear()
         log("ClassPool release end")
+        CustomLogger.closeLogFile()
     }
 
-    fun isTarget(className: String) = targetMap.containsKey(className)
+    fun isTarget(name: String) = map.containsKey(name)
 
     fun logCollectResult() {
-        log("map contain insert class info collect finish")
-        for (key in mapContainInsertClass.keys) {
+        log("map contain insert class info collect finish...source list :")
+        for (key in insertSourceMap.keys) {
             log(key)
         }
 
-        log("map contain inject dest collect finish")
+        log("map contain inject dest collect finish...target list :")
         for (key in targetMap.keys) {
-            log("$key : ${targetMap[key]}\n")
+            log(key)
         }
     }
 }

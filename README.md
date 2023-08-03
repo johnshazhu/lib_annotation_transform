@@ -4,7 +4,7 @@ needs to be used together with [lib_annotation](https://github.com/johnshazhu/li
 usage
 ```
 plugins {
-  id("io.github.johnshazhu.lib_annotation_transform") version "1.0.4"
+  id("io.github.johnshazhu.lib_annotation_transform") version "1.0.5"
 }
 ```
 You can view code in module test, it shows how to use @Inject annotation
@@ -35,9 +35,8 @@ fun onResume() {
 Support custom config, we can add config info in transform_config.properties.
 ```
 log_enable=true
-skip_package=org.greenrobot,com.networkbench
+save_log_enable=true
+skip_package=org.greenrobot,com.networkbench,anet/channel,
 skip_filename_prefix=R.,R$,kotlin,android,META-INF,com/lib/annotation
 skip_filename_contain=BuildConfig,intellij,jetbrains,io.github.johnshazhu
-skip_jar_path_contain=.gradle/caches
-keep_jar_path_contain=lib_annotation
 ```

@@ -10,6 +10,7 @@ import org.apache.commons.io.IOUtils
 import org.gradle.api.Plugin
 import org.gradle.api.Project
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.*
 import java.util.jar.JarFile
@@ -43,6 +44,7 @@ class AnnotationPlugin : Transform(), Plugin<Project> {
         getProperties(target)
         val props = Properties()
         props.load(this::class.java.classLoader.getResourceAsStream(VERSION_PROPERTIES))
+        CustomLogger.init(target.rootDir.absolutePath)
         log("plugin apply, version = ${props.getProperty(VERSION)}")
     }
 
@@ -62,8 +64,11 @@ class AnnotationPlugin : Transform(), Plugin<Project> {
         }
 
         transformInvocation.inputs.run {
+            // collect source insert info and their target info
             collectInjectClassesInfo(this)
-            injectPrepare(this, outputProvider)
+            // traversal files to check if they are the insert targets
+            injectPrepare(this)
+            // insert code to target files
             injectClassFile(this, outputProvider)
         }
 
@@ -76,10 +81,12 @@ class AnnotationPlugin : Transform(), Plugin<Project> {
         log("collectInjectClassesInfo")
         inputs.forEach { transformInput ->
             transformInput.directoryInputs.forEach { directoryInput ->
+                clsPool.appendClassPathByFile(directoryInput.file)
                 collectDirectoryInput(directoryInput)
             }
 
             transformInput.jarInputs.forEach { jarInput ->
+                clsPool.appendClassPathByFile(jarInput.file)
                 collectJarInput(jarInput)
             }
         }
@@ -88,20 +95,16 @@ class AnnotationPlugin : Transform(), Plugin<Project> {
 
     private fun collectDirectoryInput(directoryInput: DirectoryInput) {
         if (directoryInput.file.isDirectory) {
-            directoryInput.file.walkTopDown().filter {
-                !isIgnoreFileName(it.name) && isClassFile(it.name)
-            }.forEach {
-                clsPool.appendClassPathByFile(it)
-                clsPool.collectUsedClass(it, null, null)
+            directoryInput.file.walkTopDown().forEach {
+                if (!isIgnoreFileName(it.name) && isClassFile(it.name)) {
+                    clsPool.appendClassPathByFile(it)
+                    clsPool.collectUsedClass(it, null, null)
+                }
             }
         }
     }
 
     private fun collectJarInput(jarInput: JarInput) {
-        val path = jarInput.file.absolutePath
-        if (isIgnoreJar(path) && !isKeepJar(path)) {
-            return
-        }
         if (jarInput.file.absolutePath.endsWith(".jar")) {
             val jarFile = JarFile(jarInput.file)
             clsPool.appendClassPathByFile(jarInput.file)
@@ -112,7 +115,7 @@ class AnnotationPlugin : Transform(), Plugin<Project> {
                 val entryName = jarEntry.name
                 val inputStream = jarFile.getInputStream(jarEntry)
                 if (!isIgnoreFileName(entryName)) {
-                    log("collect info in jar file ${jarFile.name}。Current entryName = $entryName")
+//                    log("collect info in jar file ${jarFile.name}。Current entryName = $entryName")
                     clsPool.collectUsedClass(null, entryName, clsPool.makeClass(inputStream))
                 }
                 inputStream.close()
@@ -122,43 +125,66 @@ class AnnotationPlugin : Transform(), Plugin<Project> {
         }
     }
 
-    private fun injectPrepare(inputs: Collection<TransformInput>, outputProvider: TransformOutputProvider) {
+    private fun injectPrepare(inputs: Collection<TransformInput>) {
         inputs.forEach { transformInput ->
             transformInput.directoryInputs.forEach { directoryInput ->
-                handleDirectoryInput(directoryInput, outputProvider, false)
+                prepareInjectTargetInDirectory(directoryInput)
             }
 
             transformInput.jarInputs.forEach { jarInput ->
-                handleJarInputs(jarInput, outputProvider)
+                prepareInjectTargetInJar(jarInput)
             }
         }
     }
 
-    private fun handleDirectoryInput(directoryInput: DirectoryInput, outputProvider: TransformOutputProvider, inject: Boolean) {
+    private fun prepareInjectTargetInDirectory(directoryInput: DirectoryInput) {
         if (directoryInput.file.isDirectory) {
             directoryInput.file.walkTopDown().filter {
                 !isIgnoreFileName(it.name)
             }.forEach {
-                if (!it.isDirectory && isClassFile(it.name)) {
-                    if (!inject) {
-                        clsPool.injectPrepare(it)
-                    } else {
-                        clsPool.injectInsertInfo(it.absolutePath, directoryInput.file.absolutePath)
-                    }
-                }
+                val inputStream = FileInputStream(it)
+                val ctClass = clsPool.makeClass(inputStream)
+                inputStream.close()
+                clsPool.injectPrepare(ctClass, it.absolutePath)
             }
-        }
-
-        if (inject) {
-            //处理完输入文件之后，要把输出给下一个任务
-            val dest = outputProvider.getContentLocation(directoryInput.name,
-                directoryInput.contentTypes, directoryInput.scopes, Format.DIRECTORY)
-
-            FileUtils.copyDirectory(directoryInput.file, dest)
         }
     }
 
+    private fun prepareInjectTargetInJar(jarInput: JarInput) {
+        if (!isFilterPackage(jarInput.name)) {
+            val jarFile = JarFile(jarInput.file)
+            val enumeration = jarFile.entries()
+            while (enumeration.hasMoreElements()) {
+                val jarEntry = enumeration.nextElement()
+                if (!isIgnoreFileName(jarEntry.name)) {
+                    val inputStream = jarFile.getInputStream(jarEntry)
+                    val ctClass = clsPool.makeClass(inputStream)
+                    clsPool.injectPrepare(ctClass, jarEntry.name)
+                    inputStream.close()
+                }
+            }
+            jarFile.close()
+        }
+    }
+
+    private fun handleDirectoryInput(directoryInput: DirectoryInput, outputProvider: TransformOutputProvider) {
+        if (directoryInput.file.isDirectory) {
+            directoryInput.file.walkTopDown().filter {
+                !isIgnoreFileName(it.name)
+            }.forEach {
+                clsPool.injectInsertInfo(it.absolutePath, directoryInput.file.absolutePath)
+            }
+        }
+
+        //处理完输入文件之后，要把输出给下一个任务
+        val dest = outputProvider.getContentLocation(directoryInput.name,
+            directoryInput.contentTypes, directoryInput.scopes, Format.DIRECTORY)
+
+        FileUtils.copyDirectory(directoryInput.file, dest)
+    }
+
     private fun handleJarInputs(jarInput: JarInput, outputProvider: TransformOutputProvider) {
+//        log("jarInput.file.absolutePath = ${jarInput.file.absolutePath}")
         if (jarInput.file.absolutePath.endsWith(".jar") && !isFilterPackage(jarInput.name)) {
             //重名名输出文件,因为同名会覆盖
             var jarName = jarInput.name
@@ -181,13 +207,8 @@ class AnnotationPlugin : Transform(), Plugin<Project> {
                 val zipEntry = ZipEntry(entryName)
                 val inputStream = jarFile.getInputStream(jarEntry)
                 var ctClass: CtClass? = null
-                if (!isIgnoreFileName(entryName)) {
-                    log("handleJarInputs $entryName")
-                    ctClass = clsPool.makeClass(inputStream)
-                    if (clsPool.isTarget(ctClass.name)) {
-                        log("process jar ${jarName}'s entry $entryName")
-                        clsPool.injectItem(ctClass.name, null)
-                    }
+                if (!isIgnoreFileName(entryName) && clsPool.isTarget(entryName)) {
+                    ctClass = clsPool.injectInJar(entryName, inputStream)
                 }
                 jarOutputStream.putNextEntry(zipEntry)
                 if (ctClass != null) {
@@ -217,7 +238,11 @@ class AnnotationPlugin : Transform(), Plugin<Project> {
         //目录下class文件遍历修改
         inputs.forEach { transformInput ->
             transformInput.directoryInputs.forEach { directoryInput ->
-                handleDirectoryInput(directoryInput, outputProvider, true)
+                handleDirectoryInput(directoryInput, outputProvider)
+            }
+
+            transformInput.jarInputs.forEach { jarInput ->
+                handleJarInputs(jarInput, outputProvider)
             }
         }
     }
