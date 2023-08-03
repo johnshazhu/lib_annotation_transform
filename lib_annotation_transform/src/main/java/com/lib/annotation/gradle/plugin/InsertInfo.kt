@@ -9,11 +9,12 @@ class InsertInfo(
     val srcMtd: CtMethod?,
     var destClassName: String?,
     val srcFieldType: String?,
+    var destMtdName: String?,
     val catch: String?,
     var isInterface: Boolean
 ) {
     override fun toString(): String {
-        return "[destClassName] = $destClassName, [srcClassName] = $srcClassName" +
+        return "[destClassName] = $destClassName, [destMtdName] = $destMtdName, [srcClassName] = $srcClassName" +
                 " [srcField] = ${srcField?.name}, [srcMtd] = ${srcMtd?.name}, [srcFieldType] = $srcFieldType," +
                 " [catch] = $catch, [isInterface] = $isInterface"
     }

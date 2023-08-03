@@ -94,12 +94,14 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                         targetMap[targetClassName]
                     }
 
+                    val destMtdName = if (member is CtMethod) member.name else null
                     val info = InsertInfo(
                         ctClassName,
                         if (member is CtField) member else null,
                         if (member is CtMethod) member else null,
                         targetClassName,
                         annotation.fieldClzName,
+                        annotation.name.ifEmpty { destMtdName },
                         annotation.addCatch,
                         false
                     )
@@ -148,9 +150,9 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                 val insertInfoList = targetMap[key]!!
                 val info = insertInfoList[0]
                 val targetMethodNameList = insertInfoList.filter { insertInfo ->
-                    !insertInfo.srcMtd?.name.isNullOrEmpty()
+                    !insertInfo.destMtdName.isNullOrEmpty()
                 }.map { insertInfo ->
-                    insertInfo.srcMtd!!.name
+                    insertInfo.destMtdName
                 }.distinct()
                 dest.run {
                     // traversal interface's declared methods
@@ -160,12 +162,10 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                             continue
                         }
 
-                        var isMatched = false
                         // traversal current class's declared methods
                         for (target in ctClass.declaredMethods) {
                             // normal interface impl and anonymous lambda call
                             if (checkIsMatchNormalMethod(mtd, target) || checkIsMatchLambdaMethod(mtd, target)) {
-                                isMatched = true
                                 isContainInjectTarget = true
                                 val targetInfoList = if (targetMap.containsKey(ctClass.name)) {
                                     targetMap[ctClass.name]!!
@@ -175,19 +175,16 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                                     }
                                 }
                                 val mtdNameList = targetInfoList.filter { info ->
-                                    !info.srcMtd?.name.isNullOrEmpty()
+                                    !info.destMtdName.isNullOrEmpty()
                                 }.map { info ->
-                                    info.srcMtd!!.name
+                                    info.destMtdName!!
                                 }.distinct()
-                                if (!mtdNameList.contains(info.srcMtd?.name)) {
+                                if (!mtdNameList.contains(target.name)) {
                                     targetInfoList.add(InsertInfo(info.srcClassName, info.srcField,
                                         info.srcMtd, ctClass.name,
-                                        info.srcFieldType, info.catch, true)
+                                        info.srcFieldType, target.name, info.catch, true)
                                     )
                                 }
-                            }
-                            if (isMatched) {
-                                break
                             }
                         }
                     }
@@ -230,18 +227,18 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
 
         val clsName = map[absolutePath]
         val ctClass = get(clsName) ?: makeClass(File(absolutePath).inputStream())
-        injectItem(ctClass, ctClass.name, directoryName)
+        injectItem(ctClass, ctClass.name, absolutePath, directoryName)
     }
 
     fun injectInJar(entryName: String, inputStream: InputStream): CtClass {
         val ctClass = get(map[entryName]) ?: makeClass(inputStream)
 
-        injectItem(ctClass, ctClass.name, null)
+        injectItem(ctClass, ctClass.name, entryName, null)
 
         return ctClass
     }
 
-    private fun injectItem(ctClass: CtClass, clsName: String, directoryName: String?) {
+    private fun injectItem(ctClass: CtClass, clsName: String, pathOrEntry: String, directoryName: String?) {
         if (targetMap.containsKey(clsName)) {
             val insertInfoList = targetMap[clsName]
             if (insertInfoList.isNullOrEmpty()) {
@@ -280,6 +277,7 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
             if (insertInfoList.isEmpty()) {
                 log("targetMap remove $clsName\n")
                 targetMap.remove(clsName)
+                map.remove(pathOrEntry)
                 ctClass.detach()
             }
         }
@@ -412,7 +410,8 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                 isAnonymousInterfaceCall = isParameterMath
             }
 
-            if (checkIsMatchNormalMethod(srcMethod, m) || isAnonymousInterfaceCall) {
+            if (isAnonymousInterfaceCall || (!m.hasAnnotation(Inject::class.java) && m.name == item.destMtdName &&
+                        m.parameterTypes.contentEquals(srcMethod.parameterTypes))) {
                 val mtdCls = get(srcClsName)
                 if (mtdCls.isFrozen) {
                     mtdCls.defrost()
@@ -477,6 +476,10 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                     throwableType.detach()
                     log("add catch : ${item.catch}")
                 }
+                if (targetCtCls.isKotlin && directoryName != null) {
+                    targetCtCls.writeFile(directoryName)
+                    log("writeFile directoryName : $directoryName")
+                }
                 log("${targetCtCls.simpleName} method ${m.name} finish")
                 break
             }
@@ -514,9 +517,15 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
     }
 
     fun release() {
+        if (map.isNotEmpty()) {
+            log("maybe need check, left map info list size = ${map.size}")
+            map.keys.forEach {
+                log(it)
+            }
+        }
         map.clear()
         if (targetMap.isNotEmpty()) {
-            log("release targetMap = ${targetMap.size}")
+            log("maybe need check, left targetMap info size = ${targetMap.size}")
             targetMap.keys.forEach {
                 log("$it = ${targetMap[it]}")
             }
