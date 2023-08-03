@@ -1,10 +1,12 @@
 # lib_annotation_transform
 This plugin is for code stub in transform phase. It
 needs to be used together with [lib_annotation](https://github.com/johnshazhu/lib_annotation).
-usage
+
+check latest version of [lib_annotation_transform](https://plugins.gradle.org/plugin/io.github.johnshazhu.lib_annotation_transform)
+
 ```
 plugins {
-  id("io.github.johnshazhu.lib_annotation_transform") version "1.0.5"
+  id("io.github.johnshazhu.lib_annotation_transform") version "1.0.6"
 }
 ```
 You can view code in module test, it shows how to use @Inject annotation
