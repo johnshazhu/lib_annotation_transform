@@ -6,7 +6,7 @@ check latest version of [lib_annotation_transform](https://plugins.gradle.org/pl
 
 ```
 plugins {
-  id("io.github.johnshazhu.lib_annotation_transform") version "1.0.6"
+  id("io.github.johnshazhu.lib_annotation_transform") version "1.0.7"
 }
 ```
 You can view code in module test, it shows how to use @Inject annotation

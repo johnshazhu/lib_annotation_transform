@@ -55,7 +55,7 @@ dependencies {
 }
 
 group = "io.github.johnshazhu"
-version = "1.0.6"
+version = "1.0.7"
 gradlePlugin {
     website = "https://github.com/johnshazhu/lib_annotation_transform"
     vcsUrl = "https://github.com/johnshazhu/lib_annotation_transform.git"

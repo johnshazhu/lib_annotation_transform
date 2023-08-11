@@ -44,8 +44,8 @@ class AnnotationPlugin : Transform(), Plugin<Project> {
         getProperties(target)
         val props = Properties()
         props.load(this::class.java.classLoader.getResourceAsStream(VERSION_PROPERTIES))
+        println("plugin apply, version = ${props.getProperty(VERSION)}")
         CustomLogger.init(target.rootDir.absolutePath)
-        log("plugin apply, version = ${props.getProperty(VERSION)}")
     }
 
     override fun transform(transformInvocation: TransformInvocation) {

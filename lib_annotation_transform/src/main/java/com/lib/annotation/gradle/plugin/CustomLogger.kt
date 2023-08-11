@@ -14,7 +14,6 @@ object CustomLogger {
     private var saveLogToFile = false
     private var buffer: StringBuffer = StringBuffer()
     private var logFile: File? = null
-    private val deleteLock = Object()
     private lateinit var logFilePath: String
 
     fun init(path: String) {
@@ -39,11 +38,11 @@ object CustomLogger {
             }
         }
         if (saveLogToFile) {
-            saveLogToFile(msg)
+            saveLogToFile(msg, level == LogLevel.ERROR)
         }
     }
 
-    private fun saveLogToFile(msg: String) {
+    private fun saveLogToFile(msg: String, realTimeSave: Boolean = false) {
         if (logFile == null) {
             logFile = File("${logFilePath}/$LOG_FILENAME").apply {
                 if (exists()) {
@@ -53,16 +52,19 @@ object CustomLogger {
             }
         }
         logFile!!.run {
-            synchronized(deleteLock) {
-                buffer.append(msg).append("\n")
-            }
             if (buffer.length > MAX_SEGMENT_SIZE) {
-                synchronized(deleteLock) {
-                    FileUtils.writeStringToFile(this, buffer.toString(), ENCODING, true)
-                    buffer.delete(0, buffer.length)
-                }
+                save(this)
+            }
+            buffer.append(msg).append("\n")
+            if (realTimeSave) {
+                save(this)
             }
         }
+    }
+
+    private fun save(file: File) {
+        FileUtils.writeStringToFile(file, buffer.toString(), ENCODING, true)
+        buffer.delete(0, buffer.length)
     }
 
     fun closeLogFile() {

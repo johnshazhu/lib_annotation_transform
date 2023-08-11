@@ -119,19 +119,44 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
 
     }
 
-    private fun checkIsMatchLambdaMethod(mtd: CtMethod, target: CtMethod): Boolean {
+    private fun checkIsMatchLambdaMethod(mtd: CtMethod, target: CtMethod, methods: Array<out CtMethod>): Boolean {
         if (target.name.contains(LAMBDA)) {
-            // anonymous interface lambda call's first parameter is reference of this object
-            if (mtd.returnType == target.returnType &&
-                mtd.parameterTypes.size == target.parameterTypes.size - 1) {
-                var match = true
-                for (i in (mtd.parameterTypes.size - 1) downTo 0) {
-                    if (mtd.parameterTypes[i] != target.parameterTypes[i + 1]) {
-                        match = false
-                        break
+            val interfaceMethodParameterSize = mtd.parameterTypes.size
+            val lambdaMethodParameterSize = target.parameterTypes.size
+            val likelyMethodNameInvokeLambda = target.name.split("\$")[0]
+            run loop@ {
+                methods.filter { likelyMethodNameInvokeLambda.endsWith(it.name) }.forEach { m ->
+                    if (mtd.returnType == target.returnType) {
+                        val likelyMethodParameterSize = m.parameterTypes.size
+                        val sizeWithoutInterfaceParams = if (Modifier.isStatic(m.modifiers)) likelyMethodParameterSize else 1
+                        if (interfaceMethodParameterSize + sizeWithoutInterfaceParams == lambdaMethodParameterSize) {
+                            var matched = true
+                            var start = lambdaMethodParameterSize
+                            for (i in interfaceMethodParameterSize downTo 1) {
+                                if (target.parameterTypes[--start] != mtd.parameterTypes[i - 1]) {
+                                    matched = false
+                                    break
+                                }
+                            }
+
+                            // generated lambda method's order of parameters may be changed...
+                            /*if (Modifier.isStatic(m.modifiers)) {
+                                for (i in 0 until sizeWithoutInterfaceParams) {
+                                    log("checkIsMatchLambdaMethod ${m.parameterTypes[i].name} == ${target.parameterTypes[i].name}")
+                                    if (m.parameterTypes[i] != target.parameterTypes[i]) {
+                                        matched = false
+                                        break
+                                    }
+                                }
+                            }*/
+
+                            if (matched) {
+                                log("checkIsMatchLambdaMethod found target = ${target.name}, m = ${m.name}")
+                                return true
+                            }
+                        }
                     }
                 }
-                return match
             }
         }
         return false
@@ -162,10 +187,11 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                             continue
                         }
 
+                        val methods = ctClass.declaredMethods
                         // traversal current class's declared methods
-                        for (target in ctClass.declaredMethods) {
+                        for (target in methods) {
                             // normal interface impl and anonymous lambda call
-                            if (checkIsMatchNormalMethod(mtd, target) || checkIsMatchLambdaMethod(mtd, target)) {
+                            if (checkIsMatchNormalMethod(mtd, target) || checkIsMatchLambdaMethod(mtd, target, methods)) {
                                 isContainInjectTarget = true
                                 val targetInfoList = if (targetMap.containsKey(ctClass.name)) {
                                     targetMap[ctClass.name]!!
@@ -394,30 +420,14 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
             targetCtCls.defrost()
         }
         for (m in methods) {
-            var isAnonymousInterfaceCall = false
-            if (annotationTarget.isInterface && m.name.contains(LAMBDA)) {
-                var isParameterMath = true
-                for (interfaceMtd in annotationTarget.declaredMethods) {
-                    if (interfaceMtd.returnType == m.returnType && interfaceMtd.parameterTypes.size == m.parameterTypes.size - 1) {
-                        for (i in (interfaceMtd.parameterTypes.size - 1) downTo 0) {
-                            if (interfaceMtd.parameterTypes[i] != m.parameterTypes[i + 1]) {
-                                isParameterMath = false
-                                break
-                            }
-                        }
-                    }
-                }
-                isAnonymousInterfaceCall = isParameterMath
-            }
-
-            if (isAnonymousInterfaceCall || (!m.hasAnnotation(Inject::class.java) && m.name == item.destMtdName &&
-                        m.parameterTypes.contentEquals(srcMethod.parameterTypes))) {
+            if (!m.hasAnnotation(Inject::class.java) && m.name == item.destMtdName &&
+                (m.name.contains(LAMBDA) || m.parameterTypes.contentEquals(srcMethod.parameterTypes))) {
                 val mtdCls = get(srcClsName)
                 if (mtdCls.isFrozen) {
                     mtdCls.defrost()
                 }
 
-                val args = getArgsForInsertSource(m, isAnonymousInterfaceCall)
+                val args = getArgsForInsertSource(m, m.name.contains(LAMBDA), srcMethod)
                 var code: String = ""
                 if (mtdCls.isKotlin) {
                     // Kotlin中object反编译为java代码时，为一单例类，访问其中方法需要使用单例对象
@@ -440,35 +450,29 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                         code = getReturnTypeCheckedCode(annotation, m, code)
                     }
                 }
-                if (code.isNotEmpty()) {
-//                    log("inject code\n$code\nmodifier : ${srcMethod.modifiers}")
-                } else {
-//                    log("inject method use method copy")
-                }
-//                log("inject class : $clsName, replace = ${annotation.replace}, before = ${annotation.before}")
-                if (code.isEmpty()) {
-                    if (clsName.endsWith(KOTLIN_COMPANION_SUFFIX)) {
-                        srcMethod.addLocalVariable("this", targetCtCls)
-                    }
-                    m.setBody(srcMethod, null)
-                } else if (annotation.replace) {
+                kotlin.runCatching {
                     if (code.isEmpty()) {
                         if (clsName.endsWith(KOTLIN_COMPANION_SUFFIX)) {
                             srcMethod.addLocalVariable("this", targetCtCls)
                         }
                         m.setBody(srcMethod, null)
-                    } else {
-                        kotlin.runCatching {
+                    } else if (annotation.replace) {
+                        if (code.isEmpty()) {
+                            if (clsName.endsWith(KOTLIN_COMPANION_SUFFIX)) {
+                                srcMethod.addLocalVariable("this", targetCtCls)
+                            }
+                            m.setBody(srcMethod, null)
+                        } else {
                             m.setBody(code)
-                        }.onFailure {
-                            log("CannotCompileException code = $code, mtd = $m, targetCls = ${targetCtCls.name}, src = $srcClsName", LogLevel.ERROR)
-                            throw CannotCompileException(it.message)
                         }
+                    } else if (annotation.before) {
+                        m.insertBefore(code)
+                    } else {
+                        m.insertAfter(code)
                     }
-                } else if (annotation.before) {
-                    m.insertBefore(code)
-                } else {
-                    m.insertAfter(code)
+                }.onFailure {
+                    log("CannotCompileException code = $code, mtd = $m, targetCls = ${targetCtCls.name}, src = $srcClsName", LogLevel.ERROR)
+                    throw CannotCompileException(it.message)
                 }
                 if (!item.catch.isNullOrEmpty()) {
                     val throwableType = get(Throwable::class.java.name)
@@ -476,7 +480,7 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
                     throwableType.detach()
                     log("add catch : ${item.catch}")
                 }
-                if (targetCtCls.isKotlin && directoryName != null) {
+                if (directoryName != null) {
                     targetCtCls.writeFile(directoryName)
                     log("writeFile directoryName : $directoryName")
                 }
@@ -499,14 +503,16 @@ class CustomClassPool(useDefaultPath: Boolean): ClassPool(useDefaultPath) {
         return code
     }
 
-    private fun getArgsForInsertSource(mtd: CtMethod, isAnonymousCall: Boolean): String {
+    private fun getArgsForInsertSource(mtd: CtMethod, isAnonymousCall: Boolean, src: CtMethod): String {
         // $$ represent all parameters of the method
         var args = ""
         if (isAnonymousCall) {
             // static method, $0 is not available.
             // lambda of anonymous interface call's first parameter is this reference, we do not need it.
             // so we start from the second parameter.
-            for (i in 2..mtd.parameterTypes.size) {
+            val interfaceMethodParameterSize = src.parameterTypes.size
+            val start = mtd.parameterTypes.size - interfaceMethodParameterSize + 1
+            for (i in start..mtd.parameterTypes.size) {
                 args += "\$$i,"
             }
             if (args.isNotEmpty()) {
